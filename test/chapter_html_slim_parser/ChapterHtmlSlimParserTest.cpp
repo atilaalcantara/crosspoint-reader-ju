@@ -2,7 +2,9 @@
 #include <GfxRenderer.h>
 #include <gtest/gtest.h>
 
+#include <cstdio>
 #include <filesystem>
+#include <iostream>
 #include <memory>
 #include <set>
 #include <string>
@@ -69,6 +71,117 @@ TEST_F(ChapterHtmlSlimParserTest, RubySurvivesPartialParagraphExtraction) {
     for (size_t i = 0; i + 1 < retainedWords; ++i) EXPECT_TRUE(line->getRubyTexts()[i].empty());
   });
   EXPECT_EQ(lines, 2u);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, TextBlocksKeepSourceCodepointRangesAcrossNfcRenderingAndCacheRoundTrip) {
+  ParsedText text(false);
+  text.addWord("alpha", EpdFontFamily::REGULAR, false, false, 20);
+  // Source spelling is NFD (five codepoints); the renderer stores the NFC form
+  // (four codepoints). Anchor offsets remain in the source-visible coordinate space.
+  text.addWord("cafe\xcc\x81", EpdFontFamily::REGULAR, false, false, 26);
+
+  std::unique_ptr<TextBlock> rendered;
+  text.layoutAndExtractLines(renderer, 0, 500,
+                             [&](std::unique_ptr<TextBlock> line, const uint32_t) { rendered = std::move(line); });
+  ASSERT_NE(rendered, nullptr);
+  ASSERT_EQ(rendered->wordCount(), 2);
+  EXPECT_EQ(rendered->wordText(1), std::string("caf\xc3\xa9"));
+  EXPECT_EQ(rendered->wordVisibleStart(0), 20u);
+  EXPECT_EQ(rendered->wordVisibleEnd(0), 25u);
+  EXPECT_EQ(rendered->wordVisibleStart(1), 26u);
+  EXPECT_EQ(rendered->wordVisibleEnd(1), 31u);
+
+  const char* cachePath = "/tmp/crosspoint-textblock-offset-cache.bin";
+  HalFile output;
+  ASSERT_TRUE(output.open(cachePath, "wb"));
+  ASSERT_TRUE(rendered->serialize(output));
+  ASSERT_TRUE(output.close());
+
+  HalFile input;
+  ASSERT_TRUE(input.open(cachePath, "rb"));
+  auto reloaded = TextBlock::deserialize(input);
+  ASSERT_NE(reloaded, nullptr);
+  EXPECT_EQ(reloaded->wordVisibleStart(0), 20u);
+  EXPECT_EQ(reloaded->wordVisibleEnd(0), 25u);
+  EXPECT_EQ(reloaded->wordVisibleStart(1), 26u);
+  EXPECT_EQ(reloaded->wordVisibleEnd(1), 31u);
+  input.close();
+  std::remove(cachePath);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, NormalizedSegmentsKeepIntermediateSourceOffsets) {
+  ParsedText text(false, false, true);
+  text.addWord("e\xcc\x81!x", EpdFontFamily::REGULAR, false, false, 10);
+
+  std::unique_ptr<TextBlock> rendered;
+  text.layoutAndExtractLines(renderer, 0, 500,
+                             [&](std::unique_ptr<TextBlock> line, const uint32_t) { rendered = std::move(line); });
+  ASSERT_NE(rendered, nullptr);
+  ASSERT_EQ(rendered->wordCount(), 3);
+  EXPECT_EQ(rendered->wordText(0), std::string("\xc3\xa9"));
+  EXPECT_EQ(rendered->wordVisibleStart(0), 10u);
+  EXPECT_EQ(rendered->wordVisibleEnd(0), 12u);
+  EXPECT_EQ(std::string(rendered->wordText(1)), "!");
+  EXPECT_EQ(rendered->wordVisibleStart(1), 12u);
+  EXPECT_EQ(rendered->wordVisibleEnd(1), 13u);
+  EXPECT_EQ(std::string(rendered->wordText(2)), "x");
+  EXPECT_EQ(rendered->wordVisibleStart(2), 13u);
+  EXPECT_EQ(rendered->wordVisibleEnd(2), 14u);
+
+  ParsedText cjk(false);
+  cjk.addWord("e\xcc\x81\xe6\xbc\xa2\xe5\xad\x97", EpdFontFamily::REGULAR, false, false, 40);
+  std::unique_ptr<TextBlock> cjkLine;
+  cjk.layoutAndExtractLines(renderer, 0, 500,
+                            [&](std::unique_ptr<TextBlock> line, const uint32_t) { cjkLine = std::move(line); });
+  ASSERT_NE(cjkLine, nullptr);
+  ASSERT_EQ(cjkLine->wordCount(), 3);
+  EXPECT_EQ(std::string(cjkLine->wordText(0)), "\xc3\xa9");  // é, composed before the CJK breaks
+  EXPECT_EQ(cjkLine->wordVisibleStart(0), 40u);
+  EXPECT_EQ(cjkLine->wordVisibleEnd(0), 42u);
+  EXPECT_EQ(std::string(cjkLine->wordText(1)), "\xe6\xbc\xa2");  // 漢
+  EXPECT_EQ(cjkLine->wordVisibleStart(1), 42u);
+  EXPECT_EQ(cjkLine->wordVisibleEnd(1), 43u);
+  EXPECT_EQ(std::string(cjkLine->wordText(2)), "\xe5\xad\x97");  // 字
+  EXPECT_EQ(cjkLine->wordVisibleStart(2), 43u);
+  EXPECT_EQ(cjkLine->wordVisibleEnd(2), 44u);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, ReportsTextPageCacheOffsetOverheadForRepeatableSample) {
+  ParsedText text(false);
+  uint32_t sourceOffset = 0;
+  for (int i = 0; i < 64; ++i) {
+    const std::string word = (i % 3 == 0) ? "pagination" : (i % 3 == 1) ? "stable" : "anchor";
+    text.addWord(word, EpdFontFamily::REGULAR, false, false, sourceOffset);
+    sourceOffset += static_cast<uint32_t>(word.size() + 1);  // one visible space between words
+  }
+
+  Page page;
+  int y = 0;
+  uint32_t wordCount = 0;
+  uint32_t textBlockCount = 0;
+  text.layoutAndExtractLines(renderer, 0, 280, [&](std::unique_ptr<TextBlock> block, const uint32_t) {
+    wordCount += block->wordCount();
+    ++textBlockCount;
+    page.elements.push_back(std::make_unique<PageLine>(std::move(block), 0, static_cast<int16_t>(y)));
+    y += 20;
+  });
+  ASSERT_GT(wordCount, 0u);
+  ASSERT_GT(textBlockCount, 0u);
+
+  const char* cachePath = "/tmp/crosspoint-visible-offset-measurement.bin";
+  HalFile output;
+  ASSERT_TRUE(output.open(cachePath, "wb"));
+  ASSERT_TRUE(page.serialize(output));
+  ASSERT_TRUE(output.close());
+  const size_t version49Bytes = std::filesystem::file_size(cachePath);
+  const size_t addedBytes = static_cast<size_t>(wordCount) * 4 + static_cast<size_t>(textBlockCount) * 4;
+  ASSERT_GT(version49Bytes, addedBytes);
+  const size_t equivalentVersion48Bytes = version49Bytes - addedBytes;
+  std::cout << "VisibleOffsetCacheMeasurement sample=64-word-page words=" << wordCount
+            << " textBlocks=" << textBlockCount << " v48Equivalent=" << equivalentVersion48Bytes
+            << " v49=" << version49Bytes << " overhead=" << addedBytes << " bytes ("
+            << (100.0 * addedBytes / equivalentVersion48Bytes) << "%)\n";
+  std::remove(cachePath);
 }
 
 TEST_F(ChapterHtmlSlimParserTest, UnequalTableCellsAndRubySurvivePageBreaks) {

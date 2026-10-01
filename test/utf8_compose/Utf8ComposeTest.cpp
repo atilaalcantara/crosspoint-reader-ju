@@ -2,6 +2,7 @@
 
 #include <cstring>
 #include <string>
+#include <vector>
 
 #include "Utf8.h"
 
@@ -49,6 +50,23 @@ TEST_P(Utf8ComposeNfc, ComposesStackedVietnameseMarks) {
   EXPECT_EQ(compose("a" + kCombCirc + kCombAcute), "\xE1\xBA\xA5");
   // a + dot-below + circumflex (canonical order) -> ậ (U+1EAD)
   EXPECT_EQ(compose("a" + kCombDotBelow + kCombCirc), "\xE1\xBA\xAD");
+}
+
+TEST(Utf8ComposeNfcSourceEnds, TracksStackedMarksAndHangulComposition) {
+  std::vector<uint32_t> sourceEnds;
+  const std::string vietnamese = "a" + kCombCirc + kCombAcute + "ng";
+  EXPECT_EQ(utf8ComposeNfcWithSourceEnds(vietnamese, sourceEnds), "\xE1\xBA\xA5ng");
+  EXPECT_EQ(sourceEnds, (std::vector<uint32_t>{3, 4, 5}));
+
+  const std::string hangul =
+      "\xE1\x84\x92\xE1\x85\xA1\xE1\x86\xAB"
+      "x";
+  EXPECT_EQ(utf8ComposeNfcWithSourceEnds(hangul, sourceEnds), "\xED\x95\x9Cx");
+  EXPECT_EQ(sourceEnds, (std::vector<uint32_t>{3, 4}));
+
+  const std::string uncomposable = "q" + kCombAcute;
+  EXPECT_EQ(utf8ComposeNfcWithSourceEnds(uncomposable, sourceEnds), uncomposable);
+  EXPECT_EQ(sourceEnds, (std::vector<uint32_t>{1, 2}));
 }
 
 // A combining mark with no composition for its base is left unchanged, and the

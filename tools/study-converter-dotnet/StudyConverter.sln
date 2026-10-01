@@ -1,0 +1,36 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StudyConverter.Core", "src/StudyConverter.Core/StudyConverter.Core.csproj", "{A40F7C13-260C-4E87-9860-3F8138A10201}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StudyConverter.Desktop", "src/StudyConverter.Desktop/StudyConverter.Desktop.csproj", "{A40F7C13-260C-4E87-9860-3F8138A10202}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StudyConverter.Cli", "src/StudyConverter.Cli/StudyConverter.Cli.csproj", "{A40F7C13-260C-4E87-9860-3F8138A10203}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "StudyConverter.Smoke", "tests/StudyConverter.Smoke/StudyConverter.Smoke.csproj", "{A40F7C13-260C-4E87-9860-3F8138A10204}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{A40F7C13-260C-4E87-9860-3F8138A10201}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10201}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10201}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10201}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10202}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10202}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10202}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10202}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10203}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10203}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10203}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10203}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10204}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10204}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10204}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A40F7C13-260C-4E87-9860-3F8138A10204}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

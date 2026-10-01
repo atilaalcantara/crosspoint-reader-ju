@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='9' fill='%230066cc'/%3E%3Ctext x='20' y='29' font-size='27' text-anchor='middle' fill='white'%3E✳%3C/text%3E%3C/svg%3E">
+  <meta name="description" content="Converta decks do Anki para o Study do X4 Pro diretamente no seu navegador.">
+  <title>Anki → Study · CrossPoint</title>
+</head>
+<body>
+  <nav class="global-nav" aria-label="Navegação principal">
+    <div class="nav-inner">
+      <a class="nav-brand" href="#inicio">CrossPoint<span class="nav-brand-light"> / Study</span></a>
+      <div class="nav-links">
+        <a href="#converter">Conversor</a>
+        <a href="#instalar">Instalar</a>
+      </div>
+      <span class="nav-meta">XTEINK X4 PRO</span>
+    </div>
+  </nav>
+
+  <header class="sub-nav">
+    <div class="sub-inner">
+      <span class="sub-title">Anki → Study</span>
+      <div class="sub-actions">
+        <a class="sub-link" href="#instalar">Como instalar</a>
+        <button class="btn btn-primary btn-small js-open-file" type="button">Escolher arquivo</button>
+      </div>
+    </div>
+  </header>
+
+  <main id="inicio">
+    <!-- Hero -->
+    <section class="tile tile-light hero" aria-labelledby="title">
+      <div class="tile-inner hero-grid">
+        <div class="hero-copy">
+          <p class="eyebrow rise" style="--d:0">Conversor local · .apkg <span aria-hidden="true">→</span> .cps</p>
+          <h1 id="title" class="rise" style="--d:1">Seus cartões.<br>Fora da tela.</h1>
+          <p class="lead rise" style="--d:2">Do Anki para o seu leitor em três toques. Tudo acontece no seu navegador — o pacote nunca sai do seu dispositivo.</p>
+          <div class="cta-row rise" style="--d:3">
+            <button class="btn btn-primary js-open-file" type="button">Escolher arquivo</button>
+            <a class="btn btn-secondary" href="#instalar">Como instalar</a>
+          </div>
+          <p class="trust rise" style="--d:4">100% local · sem upload · sem conta</p>
+        </div>
+        <div class="hero-visual rise" style="--d:5" aria-hidden="true">
+          <figure class="x4pro">
+            <div class="x4pro-frame">
+              <span class="x4pro-sidekey x4pro-sidekey-left"></span>
+              <span class="x4pro-sidekey x4pro-sidekey-power"></span>
+              <span class="x4pro-sidekey x4pro-sidekey-right"></span>
+              <span class="x4pro-slot"></span>
+              <div class="x4pro-screen">
+                <div class="epd-head"><span class="epd-head-back">←</span><strong>Estudar</strong><span class="epd-batt">100%<i></i></span></div>
+                <p class="epd-overline">Baralho</p>
+                <p class="epd-deck">2. Virologia</p>
+                <p class="epd-face">Resposta</p>
+                <p class="epd-body">O diagnóstico indireto baseia-se na detecção de ______ produzidos pelo hospedeiro. <strong>anticorpos.</strong></p>
+                <div class="epd-rate">
+                  <p class="epd-rate-title">Como foi?</p>
+                  <div class="epd-tiles">
+                    <span class="epd-tile is-selected">De novo<small>1 dia</small></span>
+                    <span class="epd-tile">Difícil<small>1 dia</small></span>
+                    <span class="epd-tile">Bom<small>3 dias</small></span>
+                    <span class="epd-tile">Fácil<small>5 dias</small></span>
+                  </div>
+                </div>
+              </div>
+              <span class="x4pro-home"></span>
+            </div>
+            <figcaption class="x4pro-caption"><span class="x4pro-dot"></span>XTEINK X4 Pro · e-ink 4,3″</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <!-- Conversor -->
+    <section class="tile tile-parchment" id="converter" aria-label="Conversor">
+      <div class="tile-inner tile-inner-narrow">
+        <div class="work-heading reveal">
+          <span class="step">01 / Converter</span>
+          <span class="format">.apkg <span aria-hidden="true">→</span> .cps</span>
+        </div>
+
+        <ol class="flow reveal" id="flow" aria-label="Etapas do conversor">
+          <li class="flow-step is-active"><span class="flow-dot">1</span><span class="flow-label"><span class="fl-long">Escolha o .apkg</span><span class="fl-short">Escolha</span></span></li>
+          <li class="flow-step"><span class="flow-dot">2</span><span class="flow-label"><span class="fl-long">Converta</span><span class="fl-short">Converta</span></span></li>
+          <li class="flow-step"><span class="flow-dot">3</span><span class="flow-label"><span class="fl-long">Baixe</span><span class="fl-short">Baixe</span></span></li>
+          <li class="flow-step"><span class="flow-dot">4</span><span class="flow-label"><span class="fl-long">Copie para /study/</span><span class="fl-short">Copie</span></span></li>
+        </ol>
+
+        <div class="card reveal">
+          <label class="drop" id="drop" for="file">
+            <input id="file" type="file" accept=".apkg,application/zip" aria-describedby="drop-hint">
+            <span class="drop-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 13v8m-8-6.101A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="m8 17l4-4l4 4"/></svg>
+            </span>
+            <strong id="drop-title">Solte seu pacote Anki aqui</strong>
+            <span id="drop-hint">ou toque para escolher um arquivo</span>
+            <span class="drop-note">.apkg · até 512 MB · nada é enviado</span>
+          </label>
+
+          <div id="selection" class="selection" hidden>
+            <div class="file-summary">
+              <div class="file-info">
+                <span class="file-icon" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/></svg></span>
+                <div>
+                  <small>ARQUIVO SELECIONADO</small>
+                  <strong id="name"></strong>
+                  <span id="summary"></span>
+                </div>
+              </div>
+              <button id="change" class="text-link" type="button">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 12a9 9 0 0 1 9-9a9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5m5 4a9 9 0 0 1-9 9a9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/></svg>
+                Trocar
+              </button>
+            </div>
+
+            <label class="field-label" for="deck">O que você quer converter?</label>
+            <select id="deck"><option value="">Todos os decks do pacote</option></select>
+            <p class="field-hint">Escolher um deck inclui também seus subdecks.</p>
+
+            <button class="btn btn-primary btn-block" id="convert" type="button"><span class="btn-label">Converter para .cps</span></button>
+          </div>
+
+          <div class="progress" id="progress" hidden role="progressbar" aria-label="Progresso do pacote">
+            <div class="progress-track"><span class="progress-bar"></span></div>
+            <ul class="progress-stages">
+              <li data-stage="read">Abrindo pacote</li>
+              <li data-stage="convert">Convertendo cartões</li>
+              <li data-stage="media">Preparando imagens</li>
+            </ul>
+          </div>
+
+          <div class="status" id="status" role="status" aria-live="polite"></div>
+
+          <div class="result" id="result" hidden>
+            <div class="result-head">
+              <span class="result-check" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path class="check-path" d="m5 13l4.5 4.5L19 7"/></svg>
+              </span>
+              <div><strong>Arquivo pronto</strong><span id="result-summary"></span></div>
+            </div>
+            <button class="btn btn-primary btn-block" id="download" type="button"><span id="download-label">Baixar arquivo .cps</span><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15V3m9 12v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10l5 5l5-5"/></svg></button>
+
+            <div class="next" id="next-wrap" hidden>
+              <p class="next-title">
+                <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h8m-8 7h8m-8 7h8M3 17l2 2l4-4M3 7l2 2l4-4"/></svg>
+                Próximos passos
+              </p>
+              <ul class="next-list" id="next-steps"></ul>
+              <p class="next-alert" id="next-alert" hidden></p>
+            </div>
+
+            <details id="details">
+              <summary>Ver detalhes da conversão</summary>
+              <div id="report"></div>
+            </details>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Instalar -->
+    <section class="tile tile-dark" id="instalar" aria-labelledby="guide-title">
+      <div class="tile-inner guide">
+        <div class="guide-heading reveal">
+          <span class="step">02 / Instalar no X4 Pro</span>
+          <h2 id="guide-title">Do download ao dispositivo.</h2>
+          <p class="guide-lead">Converta o pacote acima e siga estes três passos.</p>
+        </div>
+        <ol class="steps">
+          <li class="reveal">
+            <span class="number" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73zm1 .27V12"/><path d="M3.29 7L12 12l8.71-5M7.5 4.27l9 5.15"/></svg></span>
+            <div><h3>Exporte pelo Anki</h3><p>No Anki Desktop: <strong>Arquivo → Exportar → Pacote de baralho Anki (.apkg)</strong>. Sem informações de agendamento.</p></div>
+          </li>
+          <li class="reveal">
+            <span class="number" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3m9 12v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m7 10l5 5l5-5"/></svg></span>
+            <div><h3>Baixe o resultado</h3><p>Sem imagens, vem um <code>.cps</code>. Com imagens, vem um <code>.zip</code> — extraia e leve <strong>tudo</strong>. Áudio e LaTeX ficam de fora.</p></div>
+          </li>
+          <li class="reveal">
+            <span class="number" aria-hidden="true"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 16h.01m-7.798-4.423a2 2 0 0 0-.212.896V18a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-5.527a2 2 0 0 0-.212-.896L18.55 5.11A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11zm19.734.436H2.054M6 16h.01"/></svg></span>
+            <div><h3>Copie para o cartão SD</h3><p>Crie <code>/study/</code> na raiz do SD e coloque o <code>.cps</code> lá (com a pasta <code>.media</code> ao lado, se houver). Em<strong> Home → File Transfer → USB Drive</strong> ou pelo Wi-Fi em <strong>Files</strong>. Depois é só abrir <strong>Study</strong>.</p></div>
+          </li>
+        </ol>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <div class="footer-inner">
+      <span class="footer-heading">CrossPoint Study</span>
+      <span>Arquivo local, estudo em qualquer lugar.</span>
+      <span class="footer-legal">Feito para XTEINK X4 Pro</span>
+    </div>
+  </footer>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

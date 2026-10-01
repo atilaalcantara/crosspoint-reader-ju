@@ -9,6 +9,7 @@
 
 #include "Epub/css/CssParser.h"
 #include "Page.h"
+#include "VisibleTextOffsetResolver.h"
 #include "hyphenation/Hyphenator.h"
 #include "parsers/ChapterHtmlSlimParser.h"
 
@@ -54,7 +55,8 @@ namespace {
 // v47: Word and character spacing in the header (cache validation); cached BlockStyle stores only character spacing.
 // v48: Hangul words wrap at spaces; with hyphenation on they may also split at a line end.
 //      Justification no longer stretches between syllables.
-constexpr uint8_t SECTION_FILE_VERSION = 48;
+// v49: Serialized TextBlocks add source-visible start/end codepoint deltas per word.
+constexpr uint8_t SECTION_FILE_VERSION = 49;
 // Written into the version field while a build is in progress; patched to
 // SECTION_FILE_VERSION only when the build is finalized. An abandoned /
 // crash-interrupted .bin therefore carries version 0, which loadSectionFile rejects
@@ -1055,17 +1057,11 @@ std::optional<uint32_t> Section::getVisibleTextOffsetForPage(const uint16_t page
 std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offset,
                                                              const bool preferFirstAtOffset) const {
   const auto findInEntries = [offset, preferFirstAtOffset](const auto& entries) -> std::optional<uint16_t> {
-    if (entries.empty()) return std::nullopt;
-    uint16_t result = 0;
+    VisibleTextOffsetResolver resolver(offset, preferFirstAtOffset);
     for (size_t i = 0; i < entries.size(); i++) {
-      const uint32_t pageStart = entries[i].visibleTextOffset;
-      if (preferFirstAtOffset && pageStart == offset) {
-        return static_cast<uint16_t>(i);
-      }
-      if (pageStart > offset) break;
-      result = static_cast<uint16_t>(i);
+      if (resolver.consume(static_cast<uint16_t>(i), entries[i].visibleTextOffset)) break;
     }
-    return result;
+    return resolver.result();
   };
 
   if (build_ && !build_->lut.empty()) {
@@ -1103,20 +1099,16 @@ std::optional<uint16_t> Section::getPageForVisibleTextOffset(const uint32_t offs
   }
 
   f.seek(visibleLutOffset);
-  uint16_t result = 0;
+  VisibleTextOffsetResolver resolver(offset, preferFirstAtOffset);
   uint32_t lastPageStart = 0;
   for (uint16_t page = 0; page < count; page++) {
     uint32_t pageStart;
     serialization::readPod(f, pageStart);
     lastPageStart = pageStart;
-    if (preferFirstAtOffset && pageStart == offset) {
-      return page;
-    }
-    if (pageStart > offset) break;
-    result = page;
+    if (resolver.consume(page, pageStart)) break;
   }
   if (partial && offset > lastPageStart) {
     return std::nullopt;
   }
-  return result;
+  return resolver.result();
 }

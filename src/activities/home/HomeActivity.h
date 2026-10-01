@@ -30,6 +30,10 @@ class HomeActivity final : public Activity {
   int coverRectY = 0;
   int coverRectW = 0;
   int coverRectH = 0;
+  // First visible row of the classic home menu. The menu band is fixed height;
+  // when rows overflow (taller device fonts, OPDS row, small panel) the window
+  // follows the selection instead of painting the last rows off-screen.
+  int menuTopRow_ = 0;
   std::vector<RecentBook> recentBooks;
   const HomeMenuItem initialMenuItem;
   const bool cleanInitialRefresh;
@@ -40,6 +44,10 @@ class HomeActivity final : public Activity {
     if (item == HomeMenuItem::FILE_BROWSER) return i;
     ++i;
     if (item == HomeMenuItem::LIBRARY) return i;
+    ++i;
+    if (item == HomeMenuItem::STUDY) return i;
+    ++i;
+    if (item == HomeMenuItem::HIGHLIGHTS) return i;
     ++i;
     if (item == HomeMenuItem::OPDS_BROWSER) return hasOpdsUrl ? i : 0;
     if (hasOpdsUrl) ++i;
@@ -54,6 +62,8 @@ class HomeActivity final : public Activity {
     int i = 0;
     if (idx == i++) return HomeMenuItem::FILE_BROWSER;
     if (idx == i++) return HomeMenuItem::LIBRARY;
+    if (idx == i++) return HomeMenuItem::STUDY;
+    if (idx == i++) return HomeMenuItem::HIGHLIGHTS;
     if (hasOpdsUrl && idx == i++) return HomeMenuItem::OPDS_BROWSER;
     if (idx == i++) return HomeMenuItem::FILE_TRANSFER;
     if (idx == i) return HomeMenuItem::SETTINGS_MENU;
@@ -62,6 +72,8 @@ class HomeActivity final : public Activity {
   void onSelectBook(const std::string& path);
   void onFileBrowserOpen();
   void onLibraryOpen();
+  void onStudyOpen();
+  void onHighlightsOpen();
   void onSettingsOpen();
   void onFileTransferOpen();
   void onOpdsBrowserOpen();

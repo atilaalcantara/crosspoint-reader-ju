@@ -90,6 +90,21 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 49
+
+Version 49 adds, per serialized `TextBlock`, a `uint32_t` visible-text base and
+two `uint16_t` deltas per word for the start and end of that word's source
+visible-codepoint span. The deltas are relative to the minimum word start in
+the block, so they remain valid after BiDi visual reordering. This metadata
+allows a text interval to be resolved back to rendered words after pagination
+changes. Older section caches are rebuilt; the page/block text and layout are
+otherwise unchanged.
+
+The additional cache payload is 4 bytes per token plus 4 bytes per text block.
+At layout time, `ParsedText` also temporarily retains a 2-byte source-span
+length per token; `TextBlock`'s arena gains 4 bytes per token plus its 4-byte
+base. Synthetic list markers carry empty spans and are not valid text anchors.
+
 ### Version 48
 
 Version 48 keeps the version 47 serialized layout unchanged. It was bumped

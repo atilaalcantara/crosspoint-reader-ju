@@ -88,6 +88,54 @@ std::string utf8ComposeNfc(const std::string& in) {
   return out;
 }
 
+std::string utf8ComposeNfcWithSourceEnds(const std::string& in, std::vector<uint32_t>& sourceEnds) {
+  sourceEnds.clear();
+  size_t sourceCodepointCount = 0;
+  const unsigned char* countPtr = reinterpret_cast<const unsigned char*>(in.c_str());
+  while (*countPtr) {
+    utf8NextCodepoint(&countPtr);
+    ++sourceCodepointCount;
+  }
+  sourceEnds.reserve(sourceCodepointCount);
+  std::string out;
+  out.reserve(in.size());
+  const unsigned char* p = reinterpret_cast<const unsigned char*>(in.c_str());
+  uint32_t sourceCodepoints = 0;
+  uint32_t base = 0;
+  uint32_t baseSourceEnd = 0;
+  bool haveBase = false;
+  const auto flushBase = [&]() {
+    if (!haveBase) return;
+    utf8AppendCodepoint(base, out);
+    sourceEnds.push_back(baseSourceEnd);
+    haveBase = false;
+  };
+
+  while (*p) {
+    const uint32_t cp = utf8NextCodepoint(&p);
+    if (cp == 0) break;
+    ++sourceCodepoints;
+    const uint32_t composed = haveBase ? utf8ComposePair(base, cp) : 0;
+    if (composed) {
+      base = composed;
+      baseSourceEnd = sourceCodepoints;
+      continue;
+    }
+    if (utf8IsCombiningMark(cp)) {
+      flushBase();
+      utf8AppendCodepoint(cp, out);
+      sourceEnds.push_back(sourceCodepoints);
+      continue;
+    }
+    flushBase();
+    base = cp;
+    baseSourceEnd = sourceCodepoints;
+    haveBase = true;
+  }
+  flushBase();
+  return out;
+}
+
 void utf8ComposeNfcInPlace(char* buffer) {
   const auto* read = reinterpret_cast<const unsigned char*>(buffer);
   char* write = buffer;

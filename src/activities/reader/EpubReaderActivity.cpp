@@ -15,6 +15,7 @@
 #include <esp_system.h>
 
 #include <algorithm>
+#include <cctype>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -26,6 +27,8 @@
 #include "DictionaryWordSelectActivity.h"
 #include "EpubReaderBookmarksActivity.h"
 #include "EpubReaderChapterSelectionActivity.h"
+#include "EpubReaderHighlightsActivity.h"
+#include "activities/util/KeyboardEntryActivity.h"
 #include "EpubReaderFootnoteSelectActivity.h"
 #include "EpubReaderPercentSelectionActivity.h"
 #include "EpubReaderUtils.h"
@@ -45,6 +48,8 @@
 #include "fontIds.h"
 #include "util/BookmarkUtil.h"
 #include "util/ButtonNavigator.h"
+#include "util/HighlightStore.h"
+#include "util/HighlightNoteUpdate.h"
 #include "util/ScreenshotUtil.h"
 
 namespace {
@@ -104,6 +109,80 @@ bool bookmarkMatchesProgress(const BookmarkEntry& bookmark, const int spineIndex
   return bookmarkProgress + bookmarkProgressEpsilon >= pageRange.start &&
          bookmarkProgress - bookmarkProgressEpsilon <= pageRange.end;
 }
+
+bool hasSelectableVisibleText(const char* text) {
+  if (!text) return false;
+  for (const unsigned char* p = reinterpret_cast<const unsigned char*>(text); *p != 0; ++p) {
+    if (*p >= 0x80 || !std::isspace(*p)) return true;
+  }
+  return false;
+}
+
+bool isHighlightTextWord(const TextBlock& block, const uint16_t wordIndex) {
+  return block.wordVisibleStart(wordIndex) < block.wordVisibleEnd(wordIndex) &&
+         hasSelectableVisibleText(block.wordText(wordIndex));
+}
+
+bool makeHighlightWordBox(const GfxRenderer& renderer, const PageLine& line, const TextBlock& block,
+                          const uint16_t wordIndex, const int fontId, const int marginLeft, const int marginTop,
+                          HighlightSelection::WordBox& out) {
+  const uint32_t visibleStart = block.wordVisibleStart(wordIndex);
+  const uint32_t visibleEnd = block.wordVisibleEnd(wordIndex);
+  const char* text = block.wordText(wordIndex);
+  if (!isHighlightTextWord(block, wordIndex)) return false;
+
+  const auto& style = block.getBlockStyle();
+  const auto wordStyle = block.wordStyle(wordIndex);
+  const uint8_t focusBoundary = block.focusBoundary(wordIndex);
+  int width = focusBoundary == 0
+                  ? renderer.getTextAdvanceX(fontId, text, wordStyle, style.characterSpacing)
+                  : block.focusSuffixX(wordIndex) +
+                        renderer.getTextAdvanceX(fontId, text + focusBoundary, wordStyle, style.characterSpacing);
+  if (width <= 0) width = 1;
+  const int ascender = renderer.getFontAscenderSize(fontId);
+  const int x = static_cast<int>(line.xPos) + block.wordXpos(wordIndex) + marginLeft;
+  const int y = static_cast<int>(line.yPos) + marginTop + block.getRubyShift(ascender);
+  const int height = renderer.getLineHeight(fontId);
+  if (x < INT16_MIN || x > INT16_MAX || y < INT16_MIN || y > INT16_MAX || width > INT16_MAX || height > INT16_MAX) {
+    return false;
+  }
+  out = {static_cast<int16_t>(x),
+         static_cast<int16_t>(y),
+         static_cast<int16_t>(width),
+         static_cast<int16_t>(height),
+         visibleStart,
+         visibleEnd};
+  return true;
+}
+
+void drawInvertedHighlightWord(GfxRenderer& renderer, const TextBlock& block, const uint16_t wordIndex,
+                               const HighlightSelection::WordBox& box, const int fontId) {
+  renderer.fillRect(box.x - 1, box.y - 1, box.width + 2, box.height + 2, true);
+  const char* text = block.wordText(wordIndex);
+  const auto style = block.wordStyle(wordIndex);
+  const auto& blockStyle = block.getBlockStyle();
+  const int x = box.x;
+  const int y = box.y;
+  const int8_t tracking = blockStyle.characterSpacing;
+  const uint8_t focusBoundary = block.focusBoundary(wordIndex);
+  if (focusBoundary == 0) {
+    renderer.drawText(fontId, x, y, text, false, style, BidiUtils::BidiBaseDir::AUTO, tracking);
+    return;
+  }
+
+  // Focus Reading stores one UTF-8 byte boundary in the word. Repaint both
+  // halves in inverse polarity while preserving their original font weights.
+  char prefix[256];
+  const size_t length = std::min<size_t>(focusBoundary, block.wordTextLen(wordIndex));
+  memcpy(prefix, text, length);
+  prefix[length] = '\0';
+  const auto boldStyle = static_cast<EpdFontFamily::Style>(style | EpdFontFamily::BOLD);
+  renderer.drawText(fontId, x, y, prefix, false, boldStyle, BidiUtils::BidiBaseDir::AUTO, tracking);
+  renderer.drawText(fontId, x + block.focusSuffixX(wordIndex), y, text + length, false, style,
+                    BidiUtils::BidiBaseDir::AUTO, tracking);
+}
+
+bool isAsciiWhitespace(const char value) { return std::isspace(static_cast<unsigned char>(value)) != 0; }
 
 std::string buildReadFolderDestination(const std::string& srcPath) {
   const size_t lastSlash = srcPath.rfind('/');
@@ -239,6 +318,14 @@ bool EpubReaderActivity::loadBook() {
   }
 
   loadCachedBookmarks();
+  loadHighlights();
+  if (initialHighlightLocation && initialHighlightLocation->first < epub->getSpineItemsCount()) {
+    currentSpineIndex = initialHighlightLocation->first;
+    pendingOffsetJump = initialHighlightLocation->second;
+    nextPageNumber = 0;
+    cachedVisibleTextOffset.reset();
+  }
+  initialHighlightLocation.reset();
   return true;
 }
 
@@ -457,9 +544,6 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
-  const auto touch =
-      ReaderUtils::detectTouchPageTurn(renderer, mappedInput, ReaderUtils::isRtlBookLanguage(epub->getLanguage()));
-
   if (showBookmarkMessage && (millis() - bookmarkMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showBookmarkMessage = false;
     requestUpdate();
@@ -488,6 +572,13 @@ void EpubReaderActivity::loop() {
     requestUpdate();
     return;
   }
+
+  // The text-selection gesture owns its contact from long-press through
+  // release, so it must be routed before tap/swipe page turns and shortcuts.
+  if (handleHighlightInput()) return;
+
+  const auto touch =
+      ReaderUtils::detectTouchPageTurn(renderer, mappedInput, ReaderUtils::isRtlBookLanguage(epub->getLanguage()));
 
   switch (mappedInput.homeButtonAction()) {
     case HomeButtonAction::ReaderMenu:
@@ -760,12 +851,22 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
         RenderLock lock;
         clearDeferredReposition();
         if (section && currentSpineIndex == sync.spineIndex) {
-          const auto page = section->getPageForVisibleTextOffset(sync.visibleTextOffset);
-          section->currentPage = page.value_or(std::max(0, sync.page));
+          const auto page = section->getPageForVisibleTextOffset(sync.visibleTextOffset, true);
+          if (page) {
+            section->currentPage = *page;
+            pendingOffsetJump.reset();
+          } else {
+            // A partial/current build may not have reached a distant anchor yet.
+            // Reopen the section with an explicit content target so renderBook()
+            // extends only as far as this offset before displaying it.
+            pendingOffsetJump = sync.visibleTextOffset;
+            nextPageNumber = 0;
+            section.reset();
+          }
         } else {
           currentSpineIndex = sync.spineIndex;
           pendingOffsetJump = sync.visibleTextOffset;
-          nextPageNumber = std::max(0, sync.page);
+          nextPageNumber = 0;
           section.reset();
         }
         requestUpdate();
@@ -939,6 +1040,22 @@ void EpubReaderActivity::onReaderMenuConfirm(EpubReaderMenuActivity::MenuAction 
           progressChangeResultHandler);
       break;
     }
+    case EpubReaderMenuActivity::MenuAction::HIGHLIGHTS: {
+      auto list = makeUniqueNoThrow<EpubReaderHighlightsActivity>(renderer, mappedInput, epub, highlights);
+      if (!list) {
+        LOG_ERR("HLT", "OOM opening highlights list");
+        requestUpdate();
+        break;
+      }
+      startActivityForResult(std::move(list), [this, progressChangeResultHandler](const ActivityResult& result) {
+        if (result.isCancelled) {
+          requestUpdate();
+          return;
+        }
+        progressChangeResultHandler(result);
+      });
+      break;
+    }
     case EpubReaderMenuActivity::MenuAction::TOGGLE_BOOKMARK: {
       addBookmark();
       break;
@@ -1020,6 +1137,7 @@ void EpubReaderActivity::applyOrientation(const uint8_t orientation) {
   }
 
   RenderLock lock(*this);
+  if (highlightSelectionActive || selectionTouchTracking) resetHighlightInteractionUnderLock(false);
   if (section) {
     rememberCurrentContentOffset();
     cachedSpineIndex = currentSpineIndex;
@@ -1063,6 +1181,7 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
   if (!section) return false;
   {
     RenderLock lock;
+    if (highlightSelectionActive || selectionTouchTracking) resetHighlightInteractionUnderLock(true);
     clearDeferredReposition();
   }
   if (isForwardTurn) {
@@ -1102,6 +1221,10 @@ bool EpubReaderActivity::pageTurn(bool isForwardTurn) {
 
 bool EpubReaderActivity::skipPages(int amount) {
   if (!section) return false;
+  if (highlightSelectionActive || selectionTouchTracking) {
+    RenderLock lock;
+    resetHighlightInteractionUnderLock(true);
+  }
   if (amount > 0) {
     RenderLock lock;
     nextPageNumber = 0;
@@ -1241,9 +1364,11 @@ void EpubReaderActivity::renderBook() {
         const int target = pendingPageJump.has_value() ? *pendingPageJump : (nextPageNumber < 0 ? 0 : nextPageNumber);
         const bool anchorJump = !pendingAnchor.empty();
 
-        if (section->isPartial() &&
-            (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
-                        : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount))) {
+        const bool partialTargetAvailable =
+            offsetJump.has_value() ? section->getPageForVisibleTextOffset(*offsetJump).has_value()
+                                   : target + PARTIAL_REBUILD_START_MARGIN < static_cast<int>(section->pageCount);
+        if (section->isPartial() && (anchorJump ? section->getPageForAnchor(pendingAnchor).has_value()
+                                               : partialTargetAvailable)) {
           LOG_DBG("ERS", "Partial covers target %d of %d; deferring extension build", target, section->pageCount);
         } else {
           const size_t spineBytes =
@@ -1462,6 +1587,14 @@ void EpubReaderActivity::renderBook() {
 
   showPendingSyncSaveError();
 
+  if (pendingHighlightSaveError || pendingHighlightRemoveError || pendingHighlightNoteError) {
+    const bool noteError = pendingHighlightNoteError;
+    pendingHighlightSaveError = false;
+    pendingHighlightRemoveError = false;
+    pendingHighlightNoteError = false;
+    GUI.drawPopup(renderer, noteError ? tr(STR_NOTE_SAVE_FAILED) : tr(STR_HIGHLIGHT_SAVE_FAILED));
+  }
+
   if (pendingScreenshot) {
     pendingScreenshot = false;
     ScreenshotUtil::takeScreenshot(renderer);
@@ -1489,6 +1622,10 @@ void EpubReaderActivity::renderBook() {
     // practice; restore a HALF cleanup here if text ever visibly ghosts
     // through the sheet (see #2190 for the mechanism).
     pushOverlayRefresh();
+  }
+
+  if (highlightPopupMode != HighlightPopupMode::None && overlayPopup.isActive()) {
+    overlayPopup.processRender(renderer, mappedInput);
   }
 }
 
@@ -1559,6 +1696,12 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   const auto t0 = millis();
   const int fontId = SETTINGS.getReaderFontId();
   ImageBlock::clearRenderFailures();
+  // renderBook() has cleared/rebuilt the framebuffer before reaching this
+  // point, so any word snapshots from a previous differential drag are stale.
+  selectionSavedRegions.clear();
+  selectionSavedBytes = 0;
+  selectionDifferentialAvailable = false;
+  currentPageWordBoxes.clear();
 
   struct PxcSlotGuard {
     ~PxcSlotGuard() { ImageBlock::releaseRenderCache(); }
@@ -1572,6 +1715,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   // its own SD pass after the scope ends.
   renderStatusBar();
   scope.endScanAndPrewarm();
+  buildCurrentPageWordBoxes(*page, orientedMarginLeft, orientedMarginTop);
   const auto tPrewarm = millis();
 
   const bool pageHasImages = page->hasImages();
@@ -1600,6 +1744,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
     } else {
       page->renderImages(renderer, fontId, orientedMarginLeft, orientedMarginTop);
     }
+    renderPageHighlights(*page, orientedMarginLeft, orientedMarginTop);
     if (absoluteImageGrayscale) renderStatusBar();
   };
 
@@ -1611,6 +1756,7 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
   }
 
   page->render(renderer, fontId, orientedMarginLeft, orientedMarginTop);
+  renderPageHighlights(*page, orientedMarginLeft, orientedMarginTop);
   renderStatusBar();
   const auto tBwRender = millis();
 
@@ -1795,6 +1941,15 @@ void EpubReaderActivity::renderContents(std::unique_ptr<Page> page, const int or
       const auto tEnd = millis();
       LOG_DBG("ERS", "Page render: prewarm=%lums bw_render=%lums display=%lums total=%lums", tPrewarm - t0,
               tBwRender - tPrewarm, tDisplay - tBwRender, tEnd - t0);
+    }
+  }
+
+  if (highlightSelectionActive && selectionSpineIndex == currentSpineIndex && section &&
+      selectionPage == section->currentPage) {
+    if (!rebuildSelectionOverlay()) {
+      selectionSnapshotFailed = true;
+      renderSelectionFallback();
+      renderer.displayBuffer(HalDisplay::FAST_REFRESH);
     }
   }
 }
@@ -2613,6 +2768,564 @@ void EpubReaderActivity::loadCachedBookmarks() {
 
   BookmarkFile::load(epub->getPath(), cachedBookmarks);
   updateBookmarkFlag();
+}
+
+void EpubReaderActivity::loadHighlights() {
+  highlights.clear();
+  highlightStoreLoaded = epub && HighlightStore::load(epub->getPath(), highlights);
+  nextHighlightId = 1;
+  if (!highlightStoreLoaded) {
+    highlights.clear();
+    LOG_ERR("HLT", "Could not load highlight sidecar for %s", epub ? epub->getPath().c_str() : "(no EPUB)");
+    return;
+  }
+  for (const auto& highlight : highlights) {
+    if (highlight.id >= nextHighlightId) {
+      nextHighlightId = highlight.id == UINT32_MAX ? 0 : highlight.id + 1;
+    }
+  }
+}
+
+void EpubReaderActivity::buildCurrentPageWordBoxes(const Page& page, const int marginLeft, const int marginTop) {
+  currentPageWordBoxes.clear();
+  if (!mappedInput.hasTouch()) return;
+
+  size_t capacity = 0;
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(element.get());
+    if (const auto* block = line->getBlock()) capacity += block->wordCount();
+  }
+  currentPageWordBoxes.reserve(capacity);
+  const int fontId = SETTINGS.getReaderFontId();
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(element.get());
+    const auto* block = line->getBlock();
+    if (!block || !block->valid()) continue;
+    for (uint16_t i = 0; i < block->wordCount(); ++i) {
+      HighlightSelection::WordBox box;
+      if (makeHighlightWordBox(renderer, *line, *block, i, fontId, marginLeft, marginTop, box)) {
+        currentPageWordBoxes.push_back(box);
+      }
+    }
+  }
+}
+
+void EpubReaderActivity::renderPageHighlights(const Page& page, const int marginLeft, const int marginTop) {
+  if (!epub || highlights.empty()) return;
+  const int fontId = SETTINGS.getReaderFontId();
+  size_t cachedBoxIndex = 0;
+  const bool useCachedBoxes = mappedInput.hasTouch();
+  for (const auto& element : page.elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(element.get());
+    const auto* block = line->getBlock();
+    if (!block || !block->valid()) continue;
+    for (uint16_t i = 0; i < block->wordCount(); ++i) {
+      HighlightSelection::WordBox box;
+      if (!isHighlightTextWord(*block, i)) continue;
+      if (useCachedBoxes && cachedBoxIndex < currentPageWordBoxes.size()) {
+        box = currentPageWordBoxes[cachedBoxIndex++];
+      } else if (!makeHighlightWordBox(renderer, *line, *block, i, fontId, marginLeft, marginTop, box)) {
+        continue;
+      }
+      const bool marked = std::any_of(highlights.begin(), highlights.end(), [&](const auto& highlight) {
+        return highlight.overlaps(static_cast<uint16_t>(currentSpineIndex), box.visibleStart, box.visibleEnd);
+      });
+      if (marked) drawInvertedHighlightWord(renderer, *block, i, box, fontId);
+    }
+  }
+}
+
+void EpubReaderActivity::drawSelectionHatch(const HighlightSelection::WordBox& box) {
+  const int width = renderer.getScreenWidth();
+  const int height = renderer.getScreenHeight();
+  const int x0 = std::max(0, static_cast<int>(box.x));
+  const int y0 = std::max(0, static_cast<int>(box.y));
+  const int x1 = std::min(width, static_cast<int>(box.x) + box.width);
+  const int y1 = std::min(height, static_cast<int>(box.y) + box.height);
+  for (int y = y0; y < y1; y += 2) {
+    for (int x = x0; x < x1; x += 2) renderer.drawPixel(x, y, true);
+  }
+}
+
+void EpubReaderActivity::renderSelectionFallback() {
+  if (!highlightSelectionActive) return;
+  const auto range =
+      HighlightSelection::normalize(currentPageWordBoxes, selectionGesture.anchor(), selectionGesture.focus());
+  if (!range) return;
+  for (const auto& box : currentPageWordBoxes) {
+    if (HighlightSelection::overlaps(*range, box.visibleStart, box.visibleEnd)) drawSelectionHatch(box);
+  }
+  const auto& anchor = currentPageWordBoxes[selectionGesture.anchor()];
+  const auto& focus = currentPageWordBoxes[selectionGesture.focus()];
+  renderer.drawRect(anchor.x - 2, anchor.y - 2, anchor.width + 4, anchor.height + 4, true);
+  if (selectionGesture.focus() != selectionGesture.anchor()) {
+    renderer.drawRect(focus.x - 2, focus.y - 2, focus.width + 4, focus.height + 4, true);
+  }
+}
+
+void EpubReaderActivity::restoreSelectionRegions() {
+  for (const auto& region : selectionSavedRegions) {
+    renderer.writeFramebufferRegion(region.x, region.y, region.width, region.height, region.pixels.get());
+  }
+  selectionSavedRegions.clear();
+  selectionSavedBytes = 0;
+}
+
+bool EpubReaderActivity::rebuildSelectionOverlay() {
+  restoreSelectionRegions();
+  selectionDifferentialAvailable = false;
+  if (!highlightSelectionActive || selectionSpineIndex != currentSpineIndex || !section ||
+      selectionPage != section->currentPage) {
+    return false;
+  }
+  const auto range =
+      HighlightSelection::normalize(currentPageWordBoxes, selectionGesture.anchor(), selectionGesture.focus());
+  if (!range) return false;
+  selectionSnapshotFailed = false;
+
+  size_t selectedWordCount = 0;
+  for (const auto& box : currentPageWordBoxes) {
+    selectedWordCount += HighlightSelection::overlaps(*range, box.visibleStart, box.visibleEnd);
+  }
+  selectionSavedRegions.reserve(selectedWordCount);
+  constexpr int PADDING = 2;
+  for (const auto& box : currentPageWordBoxes) {
+    if (!HighlightSelection::overlaps(*range, box.visibleStart, box.visibleEnd)) continue;
+    const int x = box.x - PADDING;
+    const int y = box.y - PADDING;
+    const int width = box.width + PADDING * 2;
+    const int height = box.height + PADDING * 2;
+    const size_t bytes = renderer.framebufferRegionSize(x, y, width, height);
+    if (bytes == 0 || selectionSavedBytes + bytes > MAX_SELECTION_SNAPSHOT_BYTES) {
+      selectionSavedRegions.clear();
+      selectionSavedBytes = 0;
+      selectionSnapshotFailed = true;
+      return false;
+    }
+    auto pixels = makeUniqueNoThrow<uint8_t[]>(bytes);
+    if (!pixels || renderer.readFramebufferRegion(x, y, width, height, pixels.get(), bytes) != bytes) {
+      selectionSavedRegions.clear();
+      selectionSavedBytes = 0;
+      selectionSnapshotFailed = true;
+      return false;
+    }
+    selectionSavedBytes += bytes;
+    selectionSavedRegions.push_back({x, y, width, height, bytes, std::move(pixels)});
+  }
+
+  for (const auto& box : currentPageWordBoxes) {
+    if (HighlightSelection::overlaps(*range, box.visibleStart, box.visibleEnd)) drawSelectionHatch(box);
+  }
+  const auto& anchor = currentPageWordBoxes[selectionGesture.anchor()];
+  const auto& focus = currentPageWordBoxes[selectionGesture.focus()];
+  renderer.drawRect(anchor.x - PADDING, anchor.y - PADDING, anchor.width + PADDING * 2, anchor.height + PADDING * 2,
+                    true);
+  if (selectionGesture.focus() != selectionGesture.anchor()) {
+    renderer.drawRect(focus.x - PADDING, focus.y - PADDING, focus.width + PADDING * 2, focus.height + PADDING * 2,
+                      true);
+  }
+  selectionDifferentialAvailable = true;
+  renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  lastSelectionRefreshMs = millis();
+  return true;
+}
+
+void EpubReaderActivity::resetHighlightInteractionUnderLock(const bool restorePixels) {
+  const bool hadSelection = highlightSelectionActive || selectionTouchTracking;
+  if (restorePixels && selectionDifferentialAvailable)
+    restoreSelectionRegions();
+  else {
+    selectionSavedRegions.clear();
+    selectionSavedBytes = 0;
+  }
+  selectionTouchTracking = false;
+  selectionGesture.cancel();
+  selectionPotentialRemoval = false;
+  selectionDifferentialAvailable = false;
+  selectionSnapshotFailed = false;
+  selectionRemoveId = 0;
+  selectionPage = -1;
+  selectionSpineIndex = 0;
+  highlightSelectionActive = false;
+  if (hadSelection) {
+    // Differential FAST repaints are cheap during drag; force the next page
+    // render through the normal cleanup waveform when the transient layer ends.
+    pagesUntilFullRefresh = 1;
+    forcedRefreshPending = true;
+  }
+  if (highlightPopupMode != HighlightPopupMode::None) overlayPopup.dismiss();
+  highlightPopupMode = HighlightPopupMode::None;
+  if (!hadSelection) currentPageWordBoxes.clear();
+}
+
+void EpubReaderActivity::clearHighlightInteraction(const bool restorePixels, const bool refreshDisplay) {
+  bool restored = false;
+  {
+    RenderLock lock;
+    restored = restorePixels && selectionDifferentialAvailable && !selectionSavedRegions.empty();
+    resetHighlightInteractionUnderLock(restorePixels);
+    if (restored && refreshDisplay) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+  }
+  if (refreshDisplay) requestUpdate();
+}
+
+std::optional<uint32_t> EpubReaderActivity::highlightAtWord(const size_t wordIndex) const {
+  if (wordIndex >= currentPageWordBoxes.size()) return std::nullopt;
+  const auto& box = currentPageWordBoxes[wordIndex];
+  for (const auto& highlight : highlights) {
+    if (highlight.overlaps(static_cast<uint16_t>(currentSpineIndex), box.visibleStart, box.visibleEnd)) {
+      return highlight.id;
+    }
+  }
+  return std::nullopt;
+}
+
+void EpubReaderActivity::beginHighlightSelection(const size_t wordIndex, const int touchX, const int touchY) {
+  if (!section || wordIndex >= currentPageWordBoxes.size()) return;
+  const auto existing = highlightAtWord(wordIndex);
+  selectionSpineIndex = static_cast<uint16_t>(currentSpineIndex);
+  selectionPage = section->currentPage;
+  selectionGesture.pointerDown(wordIndex);
+  selectionGesture.activateLongPress();
+  selectionTouchStartX = touchX;
+  selectionTouchStartY = touchY;
+  selectionTouchTracking = true;
+  selectionPotentialRemoval = existing.has_value();
+  selectionRemoveId = existing.value_or(0);
+  highlightSelectionActive = !selectionPotentialRemoval;
+  automaticPageTurnActive = false;
+  selectionSnapshotFailed = false;
+  selectionDifferentialAvailable = false;
+  if (highlightSelectionActive && !rebuildSelectionOverlay()) requestUpdate();
+}
+
+bool EpubReaderActivity::handleHighlightInput() {
+  if (highlightPopupMode != HighlightPopupMode::None) {
+    handleHighlightPopupInput();
+    return true;
+  }
+
+  bool needsFullRedraw = false;
+  bool openedSavePopup = false;
+  bool openedRemovePopup = false;
+  uint32_t removeId = 0;
+  {
+    RenderLock lock(RenderLock::Mode::Try);
+    if (!lock.ownsLock()) return true;
+
+    if (highlightSelectionActive &&
+        (selectionSpineIndex != currentSpineIndex || !section || selectionPage != section->currentPage)) {
+      resetHighlightInteractionUnderLock(false);
+      requestUpdate();
+      return true;
+    }
+
+    if (selectionTouchTracking) {
+      if (mappedInput.homeButtonAction() != HomeButtonAction::Ignore) {
+        resetHighlightInteractionUnderLock(true);
+        needsFullRedraw = true;
+      } else if (mappedInput.wasReleased(MappedInputManager::Button::Back)) {
+        resetHighlightInteractionUnderLock(true);
+        if (renderer.hasFrameBuffer()) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+        requestUpdate();
+        return true;
+      } else {
+        int x = 0;
+        int y = 0;
+        if (mappedInput.isScreenTouchHeld(x, y)) {
+          if (selectionPotentialRemoval) {
+            const int dx = x - selectionTouchStartX;
+            const int dy = y - selectionTouchStartY;
+            if (dx * dx + dy * dy >= HIGHLIGHT_TOUCH_SLOP * HIGHLIGHT_TOUCH_SLOP) {
+              selectionPotentialRemoval = false;
+              highlightSelectionActive = true;
+              if (const auto focus = HighlightSelection::hitTest(currentPageWordBoxes, x, y)) {
+                selectionGesture.moveTo(*focus);
+              }
+              selectionSnapshotFailed = false;
+              selectionDifferentialAvailable = false;
+              needsFullRedraw = !rebuildSelectionOverlay();
+            }
+          } else if (highlightSelectionActive) {
+            if (const auto focus = HighlightSelection::hitTest(currentPageWordBoxes, x, y)) {
+              if (*focus != selectionGesture.focus()) {
+                selectionGesture.moveTo(*focus);
+                if (selectionSnapshotFailed || !selectionDifferentialAvailable) {
+                  needsFullRedraw = true;
+                } else if (millis() - lastSelectionRefreshMs >= HIGHLIGHT_REFRESH_INTERVAL_MS) {
+                  needsFullRedraw = !rebuildSelectionOverlay();
+                }
+              }
+            }
+          }
+          if (needsFullRedraw) requestUpdate();
+          return true;
+        }
+
+        if (mappedInput.wasScreenTouchReleased()) {
+          if (highlightSelectionActive) {
+            int endX = 0;
+            int endY = 0;
+            if (mappedInput.wasScreenSwipeEnd(endX, endY)) {
+              if (const auto focus = HighlightSelection::hitTest(currentPageWordBoxes, endX, endY)) {
+                selectionGesture.release(*focus);
+                if (!selectionSnapshotFailed && selectionDifferentialAvailable) {
+                  needsFullRedraw = !rebuildSelectionOverlay();
+                } else {
+                  needsFullRedraw = true;
+                }
+              }
+            }
+            if (selectionGesture.tracking()) selectionGesture.release();
+          }
+          selectionTouchTracking = false;
+          if (selectionPotentialRemoval) {
+            removeId = selectionRemoveId;
+            selectionPotentialRemoval = false;
+            selectionGesture.cancel();
+            openedRemovePopup = true;
+          } else if (highlightSelectionActive) {
+            openedSavePopup = true;
+          }
+        } else if (highlightSelectionActive && mappedInput.wasReleased(MappedInputManager::Button::Confirm)) {
+          selectionTouchTracking = false;
+          openedSavePopup = true;
+        } else if (mappedInput.wasReleased(MappedInputManager::Button::Up) ||
+                   mappedInput.wasReleased(MappedInputManager::Button::Down) ||
+                   mappedInput.wasReleased(MappedInputManager::Button::Left) ||
+                   mappedInput.wasReleased(MappedInputManager::Button::Right) ||
+                   mappedInput.wasReleased(MappedInputManager::Button::PageBack) ||
+                   mappedInput.wasReleased(MappedInputManager::Button::PageForward)) {
+          resetHighlightInteractionUnderLock(true);
+          if (renderer.hasFrameBuffer()) renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+          needsFullRedraw = true;
+        } else {
+          return true;
+        }
+      }
+    } else {
+      int x = 0;
+      int y = 0;
+      unsigned long heldMs = 0;
+      if (mappedInput.hasTouch() && mappedInput.screenTouchTapCandidate(x, y, heldMs) &&
+          heldMs >= HIGHLIGHT_LONG_PRESS_MS) {
+        if (const auto hit = HighlightSelection::hitTest(currentPageWordBoxes, x, y)) {
+          beginHighlightSelection(*hit, x, y);
+          return true;
+        }
+      }
+    }
+  }
+
+  if (needsFullRedraw) requestUpdate();
+  if (openedRemovePopup)
+    showHighlightRemovePopup(removeId);
+  else if (openedSavePopup)
+    showHighlightSavePopup();
+  return needsFullRedraw || openedRemovePopup || openedSavePopup;
+}
+
+void EpubReaderActivity::showHighlightSavePopup() {
+  static const char* const options[] = {tr(STR_CANCEL), tr(STR_HIGHLIGHT), tr(STR_HIGHLIGHT_AND_NOTE)};
+  highlightPopupMode = HighlightPopupMode::SaveSelection;
+  overlayPopup.show(tr(STR_SELECT), options, 3, 1, [this](const int selected) {
+    const auto mode = highlightPopupMode;
+    highlightPopupMode = HighlightPopupMode::None;
+    if (mode == HighlightPopupMode::SaveSelection && (selected == 1 || selected == 2)) {
+      saveCurrentHighlight(selected == 2);
+      return;
+    }
+    clearHighlightInteraction(true, true);
+  });
+  requestUpdate();
+}
+
+void EpubReaderActivity::showHighlightRemovePopup(const uint32_t highlightId) {
+  static const char* const options[] = {tr(STR_DELETE), tr(STR_CANCEL)};
+  selectionRemoveId = highlightId;
+  highlightPopupMode = HighlightPopupMode::RemoveExisting;
+  overlayPopup.show(tr(STR_DELETE), options, 2, 0, [this, highlightId](const int selected) {
+    highlightPopupMode = HighlightPopupMode::None;
+    selectionRemoveId = 0;
+    if (selected == 0) {
+      removeHighlight(highlightId);
+    } else {
+      requestUpdate();
+    }
+  });
+  requestUpdate();
+}
+
+void EpubReaderActivity::handleHighlightPopupInput() {
+  overlayPopup.handleInput(mappedInput, [this] { requestUpdate(); });
+  if (overlayPopup.isActive() || highlightPopupMode == HighlightPopupMode::None) return;
+
+  // Back/outside dismissal does not invoke OptionPopup's selection callback.
+  const bool selectionWasActive = highlightSelectionActive;
+  highlightPopupMode = HighlightPopupMode::None;
+  selectionRemoveId = 0;
+  if (selectionWasActive)
+    clearHighlightInteraction(true, true);
+  else
+    requestUpdate();
+}
+
+bool EpubReaderActivity::buildHighlightQuote(const HighlightSelection::TextRange& range, std::string& quote) {
+  quote.clear();
+  if (!section || !epub || selectionPage < 0 || selectionPage >= section->pageCount) return false;
+  auto page = section->loadPage(selectionPage);
+  if (!page) return false;
+
+  struct QuoteToken {
+    uint32_t start;
+    uint32_t end;
+    int16_t lineY;
+    const char* text;
+    uint16_t bytes;
+  };
+  std::vector<QuoteToken> tokens;
+  for (const auto& element : page->elements) {
+    if (element->getTag() != TAG_PageLine) continue;
+    const auto* line = static_cast<const PageLine*>(element.get());
+    const auto* block = line->getBlock();
+    if (!block || !block->valid()) continue;
+    for (uint16_t i = 0; i < block->wordCount(); ++i) {
+      const uint32_t start = block->wordVisibleStart(i);
+      const uint32_t end = block->wordVisibleEnd(i);
+      if (HighlightSelection::overlaps(range, start, end) && hasSelectableVisibleText(block->wordText(i))) {
+        tokens.push_back({start, end, line->yPos, block->wordText(i), block->wordTextLen(i)});
+      }
+    }
+  }
+  std::sort(tokens.begin(), tokens.end(),
+            [](const auto& a, const auto& b) { return a.start == b.start ? a.end < b.end : a.start < b.start; });
+
+  uint32_t previousEnd = range.start;
+  int16_t previousLineY = tokens.empty() ? 0 : tokens.front().lineY;
+  for (const auto& token : tokens) {
+    if (token.start < previousEnd) continue;  // Ignore duplicate/overlapping layout fragments.
+    const bool crossedLine = token.lineY != previousLineY;
+    if (!quote.empty() && HighlightSelection::quoteNeedsSeparator(previousEnd, token.start, crossedLine, quote.back()) &&
+        !isAsciiWhitespace(quote.back()) &&
+        !isAsciiWhitespace(token.text[0])) {
+      if (quote.size() == HighlightEntry::MAX_QUOTE_BYTES) return false;
+      quote.push_back(' ');
+    }
+    if (quote.size() + token.bytes > HighlightEntry::MAX_QUOTE_BYTES) return false;
+    quote.append(token.text, token.bytes);
+    previousEnd = token.end;
+    previousLineY = token.lineY;
+  }
+  while (!quote.empty() && isAsciiWhitespace(quote.back())) quote.pop_back();
+  return !quote.empty();
+}
+
+void EpubReaderActivity::saveCurrentHighlight(bool editNote) {
+  bool saved = false;
+  bool prepared = false;
+  HighlightEntry pending;
+  {
+    RenderLock lock;
+    if (highlightStoreLoaded && epub && section && highlightSelectionActive && nextHighlightId != 0 &&
+        highlights.size() < HighlightStore::MAX_HIGHLIGHTS_PER_BOOK && selectionSpineIndex == currentSpineIndex &&
+        selectionPage == section->currentPage) {
+      const auto range =
+          HighlightSelection::normalize(currentPageWordBoxes, selectionGesture.anchor(), selectionGesture.focus());
+      std::string quote;
+      if (range && buildHighlightQuote(*range, quote)) {
+        pending = {nextHighlightId, selectionSpineIndex, range->start, range->end, std::move(quote)};
+        prepared = true;
+        if (!editNote) {
+          highlights.push_back(pending);
+          if (HighlightStore::save(epub->getPath(), highlights)) {
+            ++nextHighlightId;
+            saved = true;
+          } else {
+            highlights.pop_back();
+            LOG_ERR("HLT", "Failed to persist highlight for %s", epub->getPath().c_str());
+          }
+        }
+      }
+    }
+    if (!saved && !(editNote && prepared)) pendingHighlightSaveError = true;
+    resetHighlightInteractionUnderLock(true);
+  }
+  requestUpdate();
+  if (editNote && prepared) openNewHighlightNoteEditor(std::move(pending));
+}
+
+void EpubReaderActivity::openNewHighlightNoteEditor(HighlightEntry entry) {
+  auto editor = makeUniqueNoThrow<KeyboardEntryActivity>(renderer, mappedInput, I18N.get(StrId::STR_ADD_NOTE), "",
+                                                          HighlightEntry::MAX_NOTE_BYTES, InputType::Text);
+  if (!editor) {
+    pendingHighlightNoteError = true;
+    requestUpdate();
+    return;
+  }
+  startActivityForResult(std::move(editor), [this, entry = std::move(entry)](const ActivityResult& result) mutable {
+    if (result.isCancelled || !epub) return;
+    {
+      RenderLock lock;
+      if (entry.id != nextHighlightId || highlights.size() >= HighlightStore::MAX_HIGHLIGHTS_PER_BOOK) return;
+      entry.note = std::get<KeyboardResult>(result.data).text;
+      if (entry.note.size() > HighlightEntry::MAX_NOTE_BYTES || !HighlightEntry::isValidNoteUtf8(entry.note)) {
+        pendingHighlightNoteError = true;
+      } else {
+        highlights.push_back(entry);
+        if (HighlightStore::save(epub->getPath(), highlights)) {
+          ++nextHighlightId;
+        } else {
+          highlights.pop_back();
+          pendingHighlightNoteError = true;
+        }
+      }
+    }
+    requestUpdate();
+  });
+}
+
+void EpubReaderActivity::removeHighlight(const uint32_t highlightId) {
+  bool saved = false;
+  {
+    RenderLock lock;
+    const auto it = std::find_if(highlights.begin(), highlights.end(),
+                                 [highlightId](const auto& highlight) { return highlight.id == highlightId; });
+    if (it != highlights.end() && epub && highlightStoreLoaded) {
+      const auto index = static_cast<size_t>(it - highlights.begin());
+      HighlightEntry removed = *it;
+      highlights.erase(it);
+      if (HighlightStore::save(epub->getPath(), highlights)) {
+        saved = true;
+      } else {
+        highlights.insert(highlights.begin() + static_cast<std::ptrdiff_t>(index), std::move(removed));
+        LOG_ERR("HLT", "Failed to persist highlight removal for %s", epub->getPath().c_str());
+      }
+    }
+    selectionRemoveId = 0;
+    if (!saved) pendingHighlightRemoveError = true;
+  }
+  requestUpdate();
+}
+
+void EpubReaderActivity::onExit() {
+  resetHighlightInteractionUnderLock(false);
+  currentPageWordBoxes.clear();
+  ReaderActivity::onExit();
+}
+
+bool EpubReaderActivity::handleHomeGesture() {
+  if (!highlightSelectionActive && !selectionTouchTracking && highlightPopupMode == HighlightPopupMode::None) {
+    return false;
+  }
+  {
+    RenderLock lock;
+    resetHighlightInteractionUnderLock(true);
+  }
+  requestUpdate();
+  return true;
 }
 
 void EpubReaderActivity::addBookmark() {

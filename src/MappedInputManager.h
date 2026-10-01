@@ -59,6 +59,10 @@ class MappedInputManager {
   bool hasTouch() const;
   bool wasScreenTapped(int& x, int& y) const;
   bool wasScreenTouchDown(int& x, int& y) const;
+  // Tap candidate with held duration, without consuming or suppressing the
+  // ongoing contact. Long-press-to-drag interactions use this before they
+  // transition to isScreenTouchHeld().
+  bool screenTouchTapCandidate(int& x, int& y, unsigned long& heldMs) const;
   // One-shot long-press from the SDK touch classifier, fired WHILE the finger
   // is still down (stationary contact held past the SDK threshold). Consuming
   // it suppresses the remainder of the contact — its continued hold and its
@@ -86,6 +90,9 @@ class MappedInputManager {
   RowTouch colTouch(int& col, int left, int colStep, int colCount, int yStart, int yEnd, int colWidth = 0) const;
 
   SwipeDir wasSwipe() const;
+  // Final logical position for a touch classified as a swipe. Useful to
+  // reconcile the last drag sample on its release frame.
+  bool wasScreenSwipeEnd(int& x, int& y) const;
   // Back = left-to-right swipe anchored at the left edge. Public so swipe-mode
   // page turns (reader) can exclude it from a plain SwipeDir::Right.
   bool wasBackGesture() const;

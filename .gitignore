@@ -5,6 +5,8 @@
 .zed
 open-x4-sdk
 fs_
+/simulator-sd
+/firmware-x4pro/
 lib/EpdFont/fontsrc
 lib/I18n/I18nKeys.h
 lib/I18n/I18nStrings.h

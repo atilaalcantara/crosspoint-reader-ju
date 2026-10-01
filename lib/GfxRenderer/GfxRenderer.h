@@ -320,6 +320,7 @@ class GfxRenderer {
   // Enables partial-repaint patterns (e.g. moving a selection highlight)
   // without re-rendering the whole page.
   size_t readFramebufferRegion(int x, int y, int w, int h, uint8_t* dst, size_t dstCapacity) const;
+  size_t framebufferRegionSize(int x, int y, int w, int h) const;
   void writeFramebufferRegion(int x, int y, int w, int h, const uint8_t* src);
 
   // Text

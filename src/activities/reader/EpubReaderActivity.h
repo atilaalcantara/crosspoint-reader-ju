@@ -13,10 +13,12 @@
 #include "BookmarkEntry.h"
 #include "ChapterPosition.h"
 #include "EpubReaderMenuActivity.h"
+#include "HighlightEntry.h"
 #include "ProgressMapper.h"
 #include "ReaderActivity.h"
 #include "ReaderToolbarUi.h"
 #include "components/OptionPopup.h"
+#include "util/HighlightSelection.h"
 
 class EpubReaderActivity final : public ReaderActivity {
   std::shared_ptr<Epub> epub;
@@ -30,6 +32,7 @@ class EpubReaderActivity final : public ReaderActivity {
   std::optional<uint32_t> cachedVisibleTextOffset;
   std::optional<uint32_t> currentPageVisibleOffset;
   std::optional<uint32_t> pendingOffsetJump;
+  std::optional<std::pair<uint16_t, uint32_t>> initialHighlightLocation;
   unsigned long lastPageTurnTime = 0UL;
   unsigned long pageTurnDuration = 0UL;
   int8_t pendingManualTurn = 0;
@@ -53,6 +56,42 @@ class EpubReaderActivity final : public ReaderActivity {
   bool recentsEntryRemoved = false;
   unsigned long bookmarkMessageTime = 0UL;
   bool pendingReadFolderMove = false;
+
+  enum class HighlightPopupMode : uint8_t { None, SaveSelection, RemoveExisting };
+  struct SavedSelectionRegion {
+    int x = 0;
+    int y = 0;
+    int width = 0;
+    int height = 0;
+    size_t bytes = 0;
+    std::unique_ptr<uint8_t[]> pixels;
+  };
+  std::vector<HighlightEntry> highlights;
+  std::vector<HighlightSelection::WordBox> currentPageWordBoxes;
+  std::vector<SavedSelectionRegion> selectionSavedRegions;
+  HighlightSelection::DragGesture selectionGesture;
+  size_t selectionSavedBytes = 0;
+  uint32_t nextHighlightId = 1;
+  uint32_t selectionRemoveId = 0;
+  uint16_t selectionSpineIndex = 0;
+  int selectionPage = -1;
+  int selectionTouchStartX = 0;
+  int selectionTouchStartY = 0;
+  unsigned long lastSelectionRefreshMs = 0;
+  bool highlightStoreLoaded = false;
+  bool highlightSelectionActive = false;
+  bool selectionTouchTracking = false;
+  bool selectionPotentialRemoval = false;
+  bool selectionDifferentialAvailable = false;
+  bool selectionSnapshotFailed = false;
+  bool pendingHighlightSaveError = false;
+  bool pendingHighlightNoteError = false;
+  bool pendingHighlightRemoveError = false;
+  HighlightPopupMode highlightPopupMode = HighlightPopupMode::None;
+  static constexpr unsigned long HIGHLIGHT_LONG_PRESS_MS = 500;
+  static constexpr unsigned long HIGHLIGHT_REFRESH_INTERVAL_MS = 140;
+  static constexpr int HIGHLIGHT_TOUCH_SLOP = 8;
+  static constexpr size_t MAX_SELECTION_SNAPSHOT_BYTES = 24 * 1024;
 
   // Toolbar reader menu (SETTINGS.readerMenuStyle == READER_MENU_TOOLBAR): drawn
   // over the page instead of pushing the full-screen list menu. Select opens the
@@ -168,8 +207,27 @@ class EpubReaderActivity final : public ReaderActivity {
   unsigned long confirmLongPressThreshold() const;
   void toggleAutoPageTurn(uint8_t selectedPageTurnOption);
   void loadCachedBookmarks();
+  void loadHighlights();
   void addBookmark();
   void updateBookmarkFlag();
+  void buildCurrentPageWordBoxes(const Page& page, int marginLeft, int marginTop);
+  void renderPageHighlights(const Page& page, int marginLeft, int marginTop);
+  void drawSelectionHatch(const HighlightSelection::WordBox& box);
+  void renderSelectionFallback();
+  bool rebuildSelectionOverlay();
+  void restoreSelectionRegions();
+  void resetHighlightInteractionUnderLock(bool restorePixels);
+  void clearHighlightInteraction(bool restorePixels, bool refreshDisplay);
+  bool handleHighlightInput();
+  void beginHighlightSelection(size_t wordIndex, int touchX, int touchY);
+  void showHighlightSavePopup();
+  void showHighlightRemovePopup(uint32_t highlightId);
+  void saveCurrentHighlight(bool editNote = false);
+  void openNewHighlightNoteEditor(HighlightEntry entry);
+  void removeHighlight(uint32_t highlightId);
+  bool buildHighlightQuote(const HighlightSelection::TextRange& range, std::string& quote);
+  std::optional<uint32_t> highlightAtWord(size_t wordIndex) const;
+  void handleHighlightPopupInput();
 
   void navigateToHref(const std::string& href, bool savePosition = false);
   void restoreSavedPosition();
@@ -192,10 +250,14 @@ class EpubReaderActivity final : public ReaderActivity {
   void renderBook() override;
   void onEndOfBookRendered() override;
 
+  void onExit() override;
+  bool handleHomeGesture() override;
+
  public:
   explicit EpubReaderActivity(GfxRenderer& renderer, MappedInputManager& mappedInput, std::string bookPath,
                               bool allowFastInitialRefresh)
-      : ReaderActivity("EpubReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
+       : ReaderActivity("EpubReader", renderer, mappedInput, std::move(bookPath), allowFastInitialRefresh) {}
+  void setInitialHighlightLocation(uint16_t spine, uint32_t offset) { initialHighlightLocation = {{spine, offset}}; }
   ~EpubReaderActivity() override;
 
   void loop() override;

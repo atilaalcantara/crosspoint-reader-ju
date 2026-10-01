@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <string>
+#include <vector>
 #define REPLACEMENT_GLYPH 0xFFFD
 
 uint32_t utf8NextCodepoint(const unsigned char** string);
@@ -19,6 +20,10 @@ void utf8TruncateChars(std::string& str, size_t numChars);
 // precomposed Hangul syllables, so NFD text (some EPUB chapter titles; every
 // filename written by macOS) otherwise renders broken or blank.
 std::string utf8ComposeNfc(const std::string& in);
+// NFC output codepoint i ends at the returned source-visible codepoint offset
+// `sourceEnds[i]` in the original UTF-8 input. Used when layout splits a
+// normalized token but persistent anchors must remain in source coordinates.
+std::string utf8ComposeNfcWithSourceEnds(const std::string& in, std::vector<uint32_t>& sourceEnds);
 
 // Compose a null-terminated display buffer without allocating or growing it.
 // Uncomposed bytes (including malformed UTF-8) are preserved unchanged.

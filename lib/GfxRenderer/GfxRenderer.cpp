@@ -1781,6 +1781,12 @@ size_t GfxRenderer::readFramebufferRegion(int x, int y, int w, int h, uint8_t* d
   return needed;
 }
 
+size_t GfxRenderer::framebufferRegionSize(const int x, const int y, const int w, const int h) const {
+  if (w <= 0 || h <= 0) return 0;
+  const AlignedMemRect mem = screenRectToAlignedMemRect(orientation, x, y, w, h, panelWidth, panelHeight);
+  return mem.valid ? static_cast<size_t>(mem.w / 8) * mem.h : 0;
+}
+
 void GfxRenderer::writeFramebufferRegion(int x, int y, int w, int h, const uint8_t* src) {
   if (src == nullptr || w <= 0 || h <= 0) return;
 

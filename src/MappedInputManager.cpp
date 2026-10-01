@@ -174,9 +174,13 @@ bool MappedInputManager::wasScreenTapped(int& x, int& y) const {
 }
 
 bool MappedInputManager::wasScreenTouchDown(int& x, int& y) const {
+  unsigned long heldMs = 0;
+  return screenTouchTapCandidate(x, y, heldMs);
+}
+
+bool MappedInputManager::screenTouchTapCandidate(int& x, int& y, unsigned long& heldMs) const {
   float nx = 0.0f;
   float ny = 0.0f;
-  unsigned long heldMs = 0;
   if (!gpio.isTouchTapCandidate(nx, ny, heldMs)) return false;
   if (heldMs < TOUCH_DOWN_SELECT_DELAY_MS) return false;
   renderer.tapToLogical(nx, ny, x, y);
@@ -278,6 +282,12 @@ MappedInputManager::SwipeDir MappedInputManager::wasSwipe() const {
     default:
       return SwipeDir::None;
   }
+}
+
+bool MappedInputManager::wasScreenSwipeEnd(int& x, int& y) const {
+  int startX = 0;
+  int startY = 0;
+  return decodeSwipe(startX, startY, x, y);
 }
 
 // Edge classification (which swipe counts as an edge gesture) lives in the

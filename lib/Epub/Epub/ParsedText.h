@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 
+#include <cstdint>
 #include <deque>
 #include <functional>
 #include <memory>
@@ -55,6 +56,10 @@ class ParsedText {
     uint32_t base;
   };
   std::vector<uint16_t> wordVisibleOffsetDeltas;
+  // Source-codepoint span length for each token. Offsets themselves remain
+  // delta encoded; lengths are kept separately because rendered NFC text can
+  // contain fewer codepoints than the EPUB source.
+  std::vector<uint16_t> wordVisibleLengths;
   uint32_t visibleOffsetBase = 0;
   std::vector<VisibleOffsetRebase> visibleOffsetRebases;
   std::deque<std::string> rubyTexts;
@@ -78,8 +83,8 @@ class ParsedText {
   bool storeWord(std::string_view text, WordStore::StoredWord& out);
   uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
   uint32_t visibleOffsetAt(size_t wordIndex) const;
-  void pushVisibleOffset(uint32_t offset);
-  void insertVisibleOffset(size_t wordIndex, uint32_t offset);
+  void pushVisibleOffset(uint32_t offset, uint32_t sourceLength);
+  void insertVisibleOffset(size_t wordIndex, uint32_t offset, uint32_t sourceLength);
   void eraseVisibleOffsetPrefix(size_t count);
   int calculateRubyExtraStartOffset(size_t wordIdx, size_t maxWordIdx, const GfxRenderer& renderer, int fontId) const;
   int calculateRubyExtraEndOffset(size_t lineStartIdx, size_t lineBreakIdx, const GfxRenderer& renderer,
@@ -112,7 +117,7 @@ class ParsedText {
   ~ParsedText() = default;
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
-               uint32_t visibleTextOffset = 0, uint8_t linkId = 0);
+               uint32_t visibleTextOffset = 0, uint8_t linkId = 0, uint32_t visibleTextLength = UINT32_MAX);
   uint8_t addLinkTarget(const char* href);
   bool linkTargetMatches(uint8_t linkId, const char* href) const;
   void setRubyForWordAt(size_t index, const std::string& ruby);

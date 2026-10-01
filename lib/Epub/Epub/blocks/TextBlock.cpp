@@ -7,13 +7,14 @@
 #include <MemoryManager.h>
 #include <Serialization.h>
 
+#include <algorithm>
 #include <cstring>
 
 #include "../../../../src/fontIds.h"
 
 size_t TextBlock::arenaSize(const uint16_t wordCount, const bool hasFocus, const uint16_t textBytes) {
   // Layout documented in TextBlock.h: 16-bit arrays first, then 8-bit arrays, then text.
-  size_t size = static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(int16_t) + sizeof(uint8_t));
+  size_t size = static_cast<size_t>(wordCount) * (sizeof(uint16_t) * 3 + sizeof(int16_t) + sizeof(uint8_t));
   if (hasFocus) {
     size += static_cast<size_t>(wordCount) * (sizeof(uint16_t) + sizeof(uint8_t));
   }
@@ -25,7 +26,9 @@ void TextBlock::bindArenaPointers() {
   const size_t wc = numWords;
   textOffArr = reinterpret_cast<const uint16_t*>(base);
   xposArr = reinterpret_cast<const int16_t*>(base + wc * 2);
-  size_t off = wc * 4;
+  visibleStartDeltaArr = reinterpret_cast<const uint16_t*>(base + wc * 4);
+  visibleEndDeltaArr = reinterpret_cast<const uint16_t*>(base + wc * 6);
+  size_t off = wc * 8;
   if (focusPresent) {
     focusSuffixXArr = reinterpret_cast<const uint16_t*>(base + off);
     off += wc * 2;
@@ -40,6 +43,7 @@ void TextBlock::bindArenaPointers() {
 }
 
 TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<int16_t>& wordXpos,
+                     const std::vector<uint32_t>& visibleStarts, const std::vector<uint32_t>& visibleEnds,
                      const std::vector<EpdFontFamily::Style>& wordStyles, const std::vector<uint8_t>& focusBoundary,
                      const std::vector<uint16_t>& focusSuffixX, const BlockStyle& blockStyle,
                      std::vector<std::string> rubyTexts, std::vector<LinkSpan> linkSpans)
@@ -55,7 +59,8 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // Focus annotations are optional: empty vectors mean no word in this block has a split.
   // When present, they must be sized in lockstep with words[].
   const bool hasFocus = !focusBoundary.empty();
-  if (words.size() != wordXpos.size() || words.size() != wordStyles.size() || words.size() > 10000 ||
+  if (words.size() != wordXpos.size() || words.size() != visibleStarts.size() || words.size() != visibleEnds.size() ||
+      words.size() != wordStyles.size() || words.size() > 10000 ||
       (hasFocus && (words.size() != focusBoundary.size() || words.size() != focusSuffixX.size()))) {
     LOG_ERR("TXB", "Construction failed: size mismatch (words=%u, xpos=%u, styles=%u, boundary=%u, suffixX=%u)",
             static_cast<uint32_t>(words.size()), static_cast<uint32_t>(wordXpos.size()),
@@ -69,6 +74,22 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   focusPresent = hasFocus;
   if (numWords == 0) {
     return;  // valid empty block, no arena
+  }
+
+  visibleTextBase = *std::min_element(visibleStarts.begin(), visibleStarts.end());
+  uint32_t visibleTextLimit = visibleTextBase;
+  for (size_t i = 0; i < visibleStarts.size(); ++i) {
+    if (visibleEnds[i] < visibleStarts[i]) {
+      LOG_ERR("TXB", "Construction failed: reversed visible range at word %u", static_cast<uint32_t>(i));
+      isValid = false;
+      return;
+    }
+    visibleTextLimit = std::max(visibleTextLimit, visibleEnds[i]);
+  }
+  if (visibleTextLimit - visibleTextBase > UINT16_MAX) {
+    LOG_ERR("TXB", "Construction failed: visible span exceeds delta range");
+    isValid = false;
+    return;
   }
 
   // Pass 1: total text size, one NUL per word. A line is at most a physical
@@ -105,12 +126,16 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   // Pass 2: fill. Mutable aliases of the const views bound above.
   auto* textOff = const_cast<uint16_t*>(textOffArr);
   auto* xpos = const_cast<int16_t*>(xposArr);
+  auto* visibleStartDelta = const_cast<uint16_t*>(visibleStartDeltaArr);
+  auto* visibleEndDelta = const_cast<uint16_t*>(visibleEndDeltaArr);
   auto* styles = const_cast<uint8_t*>(stylesArr);
   auto* text = const_cast<char*>(textArr);
   uint16_t off = 0;
   for (uint16_t i = 0; i < numWords; i++) {
     textOff[i] = off;
     xpos[i] = wordXpos[i];
+    visibleStartDelta[i] = static_cast<uint16_t>(visibleStarts[i] - visibleTextBase);
+    visibleEndDelta[i] = static_cast<uint16_t>(visibleEnds[i] - visibleTextBase);
     styles[i] = static_cast<uint8_t>(wordStyles[i]);
     memcpy(text + off, words[i].data(), words[i].size());
     off += static_cast<uint16_t>(words[i].size());
@@ -314,6 +339,7 @@ bool TextBlock::serialize(HalFile& file) const {
   serialization::writePod(file, numWords);
   serialization::writePod(file, static_cast<uint8_t>(focusPresent ? 1 : 0));
   serialization::writePod(file, textBytes);
+  serialization::writePod(file, visibleTextBase);
   if (numWords > 0) {
     const size_t size = arenaSize(numWords, focusPresent, textBytes);
     if (file.write(arena.get(), size) != size) {
@@ -351,9 +377,11 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   uint16_t wc;
   uint8_t hasFocus;
   uint16_t textBytes;
+  uint32_t visibleTextBase;
   serialization::readPod(file, wc);
   serialization::readPod(file, hasFocus);
   serialization::readPod(file, textBytes);
+  serialization::readPod(file, visibleTextBase);
 
   // Sanity checks: cap the arena allocation and reject impossible geometry
   // (every word carries at least its NUL terminator).
@@ -373,6 +401,7 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   }
   block->numWords = wc;
   block->textBytes = textBytes;
+  block->visibleTextBase = visibleTextBase;
   block->focusPresent = hasFocus != 0;
 
   if (wc > 0) {
@@ -400,6 +429,12 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
     for (uint16_t i = 1; i < wc; i++) {
       if (textOff[i] <= textOff[i - 1] || textOff[i] >= textBytes || text[textOff[i] - 1] != '\0') {
         LOG_ERR("TXB", "Deserialization failed: corrupt word offset %u", i);
+        return nullptr;
+      }
+    }
+    for (uint16_t i = 0; i < wc; i++) {
+      if (block->visibleEndDeltaArr[i] < block->visibleStartDeltaArr[i]) {
+        LOG_ERR("TXB", "Deserialization failed: reversed visible range %u", i);
         return nullptr;
       }
     }

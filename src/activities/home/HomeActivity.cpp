@@ -22,11 +22,12 @@
 #include "MappedInputManager.h"
 #include "OpdsServerStore.h"
 #include "RecentBooksStore.h"
+#include "GlobalHighlightsActivity.h"
 #include "components/UITheme.h"
 #include "fontIds.h"
 
 int HomeActivity::getMenuItemCount() const {
-  int count = 4;  // File Browser, Library, File transfer, Settings
+  int count = 6;  // File Browser, Library, Study, Highlights, File transfer, Settings
   if (!recentBooks.empty()) {
     count += recentBooks.size();
   }
@@ -313,6 +314,12 @@ void HomeActivity::loop() {
       case HomeMenuItem::LIBRARY:
         onLibraryOpen();
         break;
+      case HomeMenuItem::STUDY:
+        onStudyOpen();
+        break;
+      case HomeMenuItem::HIGHLIGHTS:
+        onHighlightsOpen();
+        break;
       case HomeMenuItem::OPDS_BROWSER:
         onOpdsBrowserOpen();
         break;
@@ -430,8 +437,19 @@ void HomeActivity::loop() {
   const auto menuTouch = mappedInput.rowTouch(menuRow, menuTop, menuRowHeight + metrics.menuSpacing, renderedMenuCount,
                                               0, INT32_MAX, menuRowHeight);
   if (menuTouch != MappedInputManager::RowTouch::None) {
+    // menuRow addresses the visible window; translate back to model rows.
+    // Taps past the last visible row stick to it instead of selecting a
+    // hidden row.
+    const int menuStride = menuRowHeight + metrics.menuSpacing;
+    const int menuBandH = renderer.getScreenHeight() - (metrics.headerHeight + metrics.homeTopPadding +
+                                                         metrics.verticalSpacing + metrics.homeMenuTopOffset +
+                                                         metrics.buttonHintsHeight);
+    const int menuFit = menuStride <= 0 ? renderedMenuCount
+                                        : std::max(1, (menuBandH - menuRowHeight) / menuStride + 1);
+    const int visibleRow =
+        std::max(menuTopRow_, std::min(menuTopRow_ + menuFit - 1, menuRow + menuTopRow_));
     const int touchedIndex =
-        metrics.homeContinueReadingInMenu ? menuRow : menuRow + static_cast<int>(recentBooks.size());
+        metrics.homeContinueReadingInMenu ? visibleRow : visibleRow + static_cast<int>(recentBooks.size());
     if (menuTouch == MappedInputManager::RowTouch::Down) {
       if (selectorIndex != touchedIndex) {
         selectorIndex = touchedIndex;
@@ -507,13 +525,13 @@ void HomeActivity::render(RenderLock&&) {
                           std::bind(&HomeActivity::storeCoverBuffer, this));
 
   // Build menu items dynamically
-  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_LIBRARY), tr(STR_FILE_TRANSFER),
-                                        tr(STR_SETTINGS_TITLE)};
-  std::vector<UIIcon> menuIcons = {Folder, Library, Transfer, Settings};
+  std::vector<const char*> menuItems = {tr(STR_BROWSE_FILES), tr(STR_LIBRARY), tr(STR_STUDY), tr(STR_HIGHLIGHTS),
+                                         tr(STR_FILE_TRANSFER), tr(STR_SETTINGS_TITLE)};
+  std::vector<UIIcon> menuIcons = {Folder, Library, StudyCards, Highlighter, Transfer, Settings};
 
   if (hasOpdsServers) {
-    menuItems.insert(menuItems.begin() + 2, tr(STR_OPDS_BROWSER));
-    menuIcons.insert(menuIcons.begin() + 2, Blocks);
+    menuItems.insert(menuItems.begin() + 4, tr(STR_OPDS_BROWSER));
+    menuIcons.insert(menuIcons.begin() + 4, Blocks);
   }
 
   if (metrics.homeContinueReadingInMenu && !recentBooks.empty()) {
@@ -522,15 +540,32 @@ void HomeActivity::render(RenderLock&&) {
     menuIcons.insert(menuIcons.begin(), Book);
   }
 
+  const Rect menuRect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
+                      pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
+                                    metrics.homeMenuTopOffset + metrics.buttonHintsHeight)};
+  const int menuCount = static_cast<int>(menuItems.size());
+  const int menuSel = metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size();
+  // Rows visible in the fixed band; the window follows the selection so the
+  // last rows (e.g. Settings) are never painted off-screen on hardware.
+  const int menuStride = GUI.getMenuRowHeight(renderer) + metrics.menuSpacing;
+  const int menuFit =
+      menuCount <= 0 || menuStride <= 0
+          ? menuCount
+          : std::max(1, std::min(menuCount, (menuRect.height - GUI.getMenuRowHeight(renderer)) / menuStride + 1));
+  if (menuCount > 0) {
+    menuTopRow_ = std::max(0, std::min(menuCount - menuFit, menuTopRow_));
+    if (menuSel >= 0 && menuSel < menuCount) {
+      if (menuSel < menuTopRow_) menuTopRow_ = menuSel;
+      if (menuSel >= menuTopRow_ + menuFit) menuTopRow_ = menuSel - menuFit + 1;
+    }
+  } else {
+    menuTopRow_ = 0;
+  }
+  const int menuTop = menuTopRow_;
   GUI.drawButtonMenu(
-      renderer,
-      Rect{0, metrics.homeTopPadding + metrics.homeCoverTileHeight + metrics.homeMenuTopOffset, pageWidth,
-           pageHeight - (metrics.headerHeight + metrics.homeTopPadding + metrics.verticalSpacing +
-                         metrics.homeMenuTopOffset + metrics.buttonHintsHeight)},
-      static_cast<int>(menuItems.size()),
-      metrics.homeContinueReadingInMenu ? selectorIndex : selectorIndex - recentBooks.size(),
-      [&menuItems](int index) { return std::string(menuItems[index]); },
-      [&menuIcons](int index) { return menuIcons[index]; });
+      renderer, menuRect, menuFit, menuSel - menuTop,
+      [&menuItems, menuTop](int index) { return std::string(menuItems[menuTop + index]); },
+      [&menuIcons, menuTop](int index) { return menuIcons[menuTop + index]; });
 
   const auto labels = mappedInput.mapLabels(recentBooks.empty() ? "" : tr(STR_RESUME), tr(STR_SELECT), tr(STR_DIR_UP),
                                             tr(STR_DIR_DOWN));
@@ -553,6 +588,13 @@ void HomeActivity::onSelectBook(const std::string& path) { activityManager.goToR
 void HomeActivity::onFileBrowserOpen() { activityManager.goToFileBrowser(); }
 
 void HomeActivity::onLibraryOpen() { activityManager.goToLibrary(); }
+
+void HomeActivity::onStudyOpen() { activityManager.goToStudy(); }
+
+void HomeActivity::onHighlightsOpen() {
+  auto list = makeUniqueNoThrow<GlobalHighlightsActivity>(renderer, mappedInput);
+  if (list) activityManager.pushActivity(std::move(list));
+}
 
 void HomeActivity::onSettingsOpen() { activityManager.goToSettings(); }
 

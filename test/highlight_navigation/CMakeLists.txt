@@ -1,0 +1,4 @@
+add_executable(HighlightNavigationTest HighlightNavigationTest.cpp VisibleTextOffsetResolverTest.cpp)
+target_include_directories(HighlightNavigationTest BEFORE PRIVATE ${REPO_ROOT}/src)
+target_link_libraries(HighlightNavigationTest PRIVATE crosspoint_test_common GTest::gtest_main)
+gtest_discover_tests(HighlightNavigationTest)
